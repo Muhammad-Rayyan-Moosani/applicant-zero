@@ -1,0 +1,51 @@
+# Task definitions: description, inputs, expected output, whether a human gate applies, and which
+# agent runs it. The orchestrator (Agent 8) reads this to run the pipeline in order.
+
+scout:
+  agent: search_scout
+  description: "Crawl {source} and extract postings (title, company, location, description, apply_url)."
+  inputs: [source]
+  output: "List[JobPosting]"
+  human_gate: false
+
+rank:
+  agent: relevancy_ranker
+  description: "Score each posting 1-5 vs the knowledge base; keep tier >= MIN_TIER."
+  inputs: [postings, knowledge_base]
+  output: "List[RankedJob]  (tier, reasons)"
+  human_gate: false
+
+tailor:
+  agent: document_tailor
+  description: "Tailor résumé bullets (XYZ) + cover letter to {job} from the master profile."
+  inputs: [job, knowledge_base]
+  output: "TailoredDocs (summary, bullets, cover_letter_text, cover_pdf_path)"
+  human_gate: false
+
+access:
+  agent: account_creator
+  description: "Open {apply_url}. If login/account required, hand off to the human (manual sign-in)."
+  inputs: [apply_url]
+  output: "AccessResult (status: signed_in | needs_human | no_account_needed)"
+  human_gate: true        # pauses for the human to sign in when a wall is hit
+
+fill:
+  agent: form_filler
+  description: "Fill the live form from the knowledge base; yield unknown fields to the human."
+  inputs: [page, knowledge_base, tailored_docs]
+  output: "FillReport (filled[], asked[], needs_input[])"
+  human_gate: true        # pauses per unknown field
+
+ats_check:
+  agent: ats_officer
+  description: "Score tailored résumé vs {job}; loop to tailor if < MIN_ATS_SCORE, else GREEN LIGHT."
+  inputs: [tailored_docs, job]
+  output: "AtsVerdict (score, passed, green_light_token)"
+  human_gate: false
+
+submit:
+  agent: submitter
+  description: "After GREEN LIGHT + human greenlight, attach docs, submit, screenshot to /receipts."
+  inputs: [page, tailored_docs, green_light_token]
+  output: "SubmitResult (submitted, receipt_path)"
+  human_gate: true        # the final, explicit human confirmation

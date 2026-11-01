@@ -1,0 +1,21 @@
+{
+  "preferred_first": "First",
+  "legal_last": "Last",
+  "email": "you@example.com",
+  "phone": "+1 555 000 0000",
+  "city": "Your City",
+  "province": "Your Province/State",
+  "country": "Canada",
+  "work_authorization": "Authorized to work in Canada; requires sponsorship for the US",
+  "gender": "prefer-not-to-say",
+  "links": {
+    "linkedin": "https://linkedin.com/in/your-handle",
+    "github": "https://github.com/your-handle",
+    "portfolio": "https://your-site.example.com"
+  },
+  "education": {
+    "school": "Your University",
+    "program": "Your Program",
+    "grad_year": 2027
+  }
+}

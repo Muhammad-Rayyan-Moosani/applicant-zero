@@ -1,0 +1,11 @@
+# Job Application Engine — dependencies.
+anthropic>=0.40.0
+# Swarm orchestration: LangGraph state machine. The LLM goes through the `claude` CLI (subscription)
+# or the Anthropic SDK — see LLM_BACKEND in .env — so no langchain LLM wrapper is needed.
+langgraph>=0.2.0
+playwright>=1.47.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+httpx>=0.27.0
+python-dotenv>=1.0.0
+PyYAML>=6.0

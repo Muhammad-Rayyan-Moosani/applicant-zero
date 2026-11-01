@@ -1,0 +1,29 @@
+# ── Secrets ──────────────────────────────────────────────────────────────────
+.env
+*.key
+
+# ── Personal data (never publish) ───────────────────────────────────────────
+data/knowledge_base.md
+data/profile.json
+data/resume.pdf
+data/resume_fixed.pdf
+data/transcript.pdf
+data/browser_profile/
+data/applications/
+logs/
+receipts/
+data/receipts/
+
+# ── Python / venv / caches ──────────────────────────────────────────────────
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ── OS / editor ──────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
