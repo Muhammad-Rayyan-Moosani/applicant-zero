@@ -149,56 +149,54 @@ class RelevancyRanker:
                     STATE.log(f"Agent 2 Warning: Failed to pull deep context for {company} ({str(e)}). Falling back to metadata-only ranking.")
                     full_description_text = "Metadata evaluation only."
 
-            # --- STAGE 3: COGNITIVE TAXONOMY EVALUATION ---
+            # --- STAGE 3: LENIENT FIELD + LEVEL GATE ---
+            # Decide ONLY: is this a tech/IT role at an early-career level? If so, apply.
+            # Deliberately ignore graduation year, start-year/cohort, exact tech stack, empty
+            # descriptions, and location — those must never cause a skip (the applicant wants breadth).
             prompt = (
                 f"{_AGENTS['relevancy_ranker']['backstory']}\n\n"
-                "CRITICAL ASSIGNMENT:\n"
-                "Evaluate the suitability of this target position against the Candidate Knowledge Database.\n"
-                "Apply strict filters. Be highly adversarial. Do not give a high score if critical technical prerequisites are missing.\n\n"
-                "CORE RULES TO ENFORCE:\n"
-                "- Candidate Location: Canada (Has permanent work authorization for Canada, requires visa sponsorship for the United States).\n"
-                "- Experience Tier Match: If the job requires a senior profile (3+ years experience or specific senior tooling), it must match the candidate's exact timeline.\n\n"
-                f"CANDIDATE PROFILE EXTRACTION:\n{_KB[:5000]}\n\n"
-                f"JOB TARGET METADATA:\n"
-                f"Title: {title}\n"
-                f"Company: {company}\n"
-                f"Location: {location}\n"
-                f"URL: {apply_url}\n\n"
-                f"FULL DESCRIPTION DETAILS:\n{full_description_text}\n\n"
-                "JSON FORMAT RULES:\n"
-                "Evaluate and return exactly this structure:\n"
-                '{"tier": 1-5, "location_match": true/false, "stack_match": true/false, "reason": "Maximum 20 words breakdown"}'
+                "You are a LENIENT relevance gate for a student / new-grad applicant. Decide only whether "
+                "this posting is worth applying to, and bias strongly toward APPLYING.\n\n"
+                "APPLY (relevant=true) when BOTH hold:\n"
+                "  1. FIELD is software or IT: software, developer, programmer, engineering, data, "
+                "     data science, ML/AI, IT, QA/test, security, cloud/devops, web, mobile, firmware, "
+                "     systems, or a technical analyst role — anything software/data/IT related.\n"
+                "  2. LEVEL is early-career: intern, co-op, student, new-grad, entry-level, junior, "
+                "     associate, I or II — OR the level is not stated.\n\n"
+                "NEVER skip for any of these — ignore them entirely:\n"
+                "  - Graduation year, program year, cohort year or start year (e.g. a '2027' program). "
+                "Do NOT compare any dates.\n"
+                "  - A missing/empty job description or an unverifiable tech stack.\n"
+                "  - Specific tools or languages the résumé may not list.\n"
+                "  - The city or country (apply regardless of location).\n\n"
+                "SKIP (relevant=false) ONLY if the role is clearly SENIOR (senior/staff/lead/principal/"
+                "manager/director/architect, or explicitly needs 3+ years) OR clearly NOT a tech field "
+                "(e.g. nursing, sales, marketing, retail, pure finance/accounting with no software). "
+                "When unsure, APPLY.\n\n"
+                f"JOB:\nTitle: {title}\nCompany: {company}\nLocation: {location}\n"
+                f"DESCRIPTION (may be empty — that is fine):\n{full_description_text[:3000]}\n\n"
+                'Return exactly: {"relevant": true/false, "field": "", "level": "", "reason": "<=15 words"}'
             )
 
             try:
-                evaluation_data = llm.generate_json(prompt, max_tokens=1000)
-                
-                # Coerce tier type to int safely
-                tier = int(evaluation_data.get("tier", 1) or 1)
-                reason = evaluation_data.get("reason", "No reason provided.")
-                
-                j["tier"] = tier
+                ev = llm.generate_json(prompt, max_tokens=500)
+                relevant = bool(ev.get("relevant", True))      # default to applying if unsure
+                reason = ev.get("reason", "")
+                j["tier"] = 5 if relevant else 1               # tier is now just a display signal
                 j["reason"] = reason
-                
-                # Extra validation check: if location or stack match fail drastically, downgrade tier locally
-                if not evaluation_data.get("location_match", True):
-                    tier = min(tier, 2)
-                    j["tier"] = tier
-                
-                # Check threshold gate against runtime configurations
-                min_tier_threshold = getattr(config, "MIN_TIER", 3)
-                if tier >= min_tier_threshold:
-                    STATE.log(f"Agent 2 Match: Approved {company} (Tier {tier} | Reason: {reason})")
-                    # Preserve the freshly fetched description text so Agent 3 doesn't have to scrape it again!
-                    j["description"] = full_description_text
+                if relevant:
+                    STATE.log(f"Agent 2 APPLY: {company} — {title} "
+                              f"[{ev.get('level','?')} / {ev.get('field','?')}] {reason}")
+                    j["description"] = full_description_text    # reuse so Agent 3 needn't re-scrape
                     kept.append(j)
                 else:
-                    STATE.log(f"Agent 2 Dropped: Filtered out {company} (Tier {tier} | Reason: {reason})")
-                    
+                    STATE.log(f"Agent 2 Skip: {company} — {title} (not a fit: {reason})")
+
             except Exception as cognitive_err:
-                STATE.log(f"Agent 2 Error: Parsing crash during processing of {company} ({str(cognitive_err)}). Defaulting to pass to prevent pipeline stall.")
-                j["tier"] = 3
-                j["reason"] = "Default pass due to runtime evaluation error."
+                STATE.log(f"Agent 2 Error: {str(cognitive_err)} — defaulting to APPLY (lenient).")
+                j["tier"] = 5
+                j["reason"] = "default apply (evaluator error)"
+                j["description"] = full_description_text
                 kept.append(j)
                 
         STATE.log(f"Agent 2 Complete: Filtered down to {len(kept)} viable position target payloads.")
