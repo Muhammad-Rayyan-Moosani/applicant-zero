@@ -4,6 +4,7 @@
 
 # ── Personal data (never publish) ───────────────────────────────────────────
 data/knowledge_base.md
+data/learned_answers.json
 data/profile.json
 data/resume.pdf
 data/resume_fixed.pdf

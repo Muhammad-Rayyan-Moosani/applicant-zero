@@ -41,6 +41,9 @@ HEADLESS = os.getenv("HEADLESS", "0") == "1"
 MIN_TIER = int(os.getenv("MIN_TIER", "3"))
 MIN_ATS_SCORE = int(os.getenv("MIN_ATS_SCORE", "85"))
 
+# Résumé mode: 1 = use the SAME base résumé for every job (no per-job tailoring, ATS scoring skipped).
+STATIC_RESUME = os.getenv("STATIC_RESUME", "0") == "1"
+
 # A dedicated, persistent browser profile so logins the human does once are remembered.
 BROWSER_PROFILE = DATA / "browser_profile"
 BROWSER_PROFILE.mkdir(parents=True, exist_ok=True)

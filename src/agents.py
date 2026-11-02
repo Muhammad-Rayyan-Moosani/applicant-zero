@@ -208,6 +208,12 @@ class DocumentTailor:
     def tailor(self, job: dict, feedback: str = "") -> dict:
         STATE.log(f"Agent 3 (Tailor): writing docs for {job.get('company')}…")
         company, role = job.get("company", "the company"), job.get("title", "the role")
+
+        # STATIC mode: same base résumé for every job — no per-job rewrite. We still write a short,
+        # genuine cover letter, but skip summary/bullet generation (and ATS skips scoring a fixed PDF).
+        if getattr(config, "STATIC_RESUME", False):
+            return self._static(company, role)
+
         research = llm.research(f"What does {company} do, their products, mission, and tech? 4 sentences.")
         fb = f"\nATS FEEDBACK to address this revision:\n{feedback}\n" if feedback else ""
         data = llm.generate_json(
@@ -236,6 +242,36 @@ class DocumentTailor:
         return {"summary": data.get("summary", ""), "bullets": data.get("bullets", []),
                 "cover_text": cover, "cover_path": str(cover_path),
                 "resume_pdf": _resume_pdf(), "transcript_pdf": _transcript_pdf()}
+
+    def _static(self, company: str, role: str) -> dict:
+        """Static mode: attach the base résumé unchanged; still write a short grounded cover letter."""
+        body = ""
+        try:
+            body = llm.generate(
+                "Write a concise, genuine 2-paragraph cover-letter body (no header or signature) for the "
+                f"role of {role} at {company}, using ONLY these facts — never invent anything:\n"
+                f"{_KB[:3500]}\nReturn plain text only.", backend="api", max_tokens=700)
+        except Exception:
+            body = ""
+        if not body:
+            body = (f"I'm excited to apply for the {role} role at {company}. My background in software and "
+                    "applied AI — built through hands-on co-op and project work — maps well to this role, "
+                    "and I'd welcome the chance to contribute.")
+        out = config.DATA / "applications" / re.sub(r"[^A-Za-z0-9]+", "_", company)[:40]
+        out.mkdir(parents=True, exist_ok=True)
+        cover = (f"{_PROFILE.get('preferred_first','')} {_PROFILE.get('legal_last','')}\n"
+                 f"{_PROFILE.get('email','')} · {_PROFILE.get('phone','')} · "
+                 f"{_PROFILE.get('city','')}, {_PROFILE.get('province','')}\n\n"
+                 f"Dear Hiring Team at {company},\n\n{body}\n\n"
+                 f"Sincerely,\n{_PROFILE.get('preferred_first','')} {_PROFILE.get('legal_last','')}\n")
+        cover_path = out / "cover_letter.txt"
+        try:
+            cover_path.write_text(cover)
+        except Exception:
+            pass
+        STATE.log(f"Agent 3: static résumé attached + cover saved for {company}.")
+        return {"summary": "", "bullets": [], "cover_text": cover, "cover_path": str(cover_path),
+                "resume_pdf": _resume_pdf(), "transcript_pdf": _transcript_pdf(), "static": True}
 
 
 def _resume_pdf() -> str:
@@ -352,7 +388,18 @@ def _answer_for(label: str, options=None, field_type: str = "text") -> str or No
     preventing any redundant cloud token consumption or pipeline latency.
     """
     low = label.lower()
-    
+
+    # 0. Guards against classic mis-maps on enterprise forms (Workday etc.)
+    if "extension" in low:        # "Phone Extension" must NOT get the phone number
+        return None
+    if "middle" in low and "name" in low:   # optional middle name → leave blank, don't invent "None"
+        return ""
+    if "preferred" in low and "name" in low:
+        # "I have a preferred name" (a yes/no) → No; the Preferred First/Middle/Last fields → blank.
+        if low.startswith("i have") or "do you have" in low or "have a preferred" in low:
+            return "No"
+        return ""
+
     # 1. Structural Profile Lookup Loop
     for keys, pk in _MAP:
         if any(k in low for k in keys):
@@ -377,6 +424,66 @@ def _answer_for(label: str, options=None, field_type: str = "text") -> str or No
         
     # Yield None if unmapped locally so the engine knows to fall back to Agent 5's cloud layer
     return None
+
+
+# -----------------------------------------------------------------------------
+# LEARNED ANSWERS — remember what you type on Telegram so the SAME field auto-fills
+# next time (no re-asking). Stored in data/learned_answers.json (personal, gitignored).
+# -----------------------------------------------------------------------------
+_LEARNED_PATH = config.DATA / "learned_answers.json"
+_BLANK = "__BLANK__"   # marker meaning "you chose to leave this field empty"
+_BLANK_WORDS = {"", "blank", "skip", "none", "n/a", "na", "-", "—", "leave blank",
+                "leave it blank", "empty", "nil", "nothing"}
+
+
+def _load_learned() -> dict:
+    try:
+        return json.loads(_LEARNED_PATH.read_text())
+    except Exception:
+        return {}
+
+
+_LEARNED = _load_learned()
+
+
+def _norm_label(label: str) -> str:
+    """Normalize a field label so 'Postal Code *' and 'postal code' map to one key."""
+    s = re.sub(r"\s+", " ", (label or "").lower()).strip()
+    return s.rstrip("*").strip().rstrip(":").strip()
+
+
+def _learned_get(label: str):
+    return _LEARNED.get(_norm_label(label))
+
+
+def _sync_learned_to_kb() -> None:
+    """Mirror learned answers into the user's knowledge_base.md (the DB they already have), inside a
+    managed block, so the answers live in the knowledge base and the cognitive resolver can read them."""
+    kb = config.KNOWLEDGE_BASE
+    START, END = "<!-- LEARNED_ANSWERS_START -->", "<!-- LEARNED_ANSWERS_END -->"
+    rows = ["", START, "## Saved application answers (auto-updated by Agent 5)"]
+    for k, v in _LEARNED.items():
+        rows.append(f"- {k}: {'(leave blank)' if v == _BLANK else v}")
+    rows.append(END)
+    block = "\n".join(rows)
+    try:
+        text = kb.read_text() if kb.exists() else ""
+        if START in text and END in text:
+            text = re.sub(re.escape(START) + r".*?" + re.escape(END), block.strip(), text, flags=re.S)
+        else:
+            text = text.rstrip() + "\n" + block + "\n"
+        kb.write_text(text)
+    except Exception as e:
+        STATE.log(f"Agent 5: couldn't sync answers to knowledge base ({str(e)[:60]})")
+
+
+def _learned_set(label: str, value: str) -> None:
+    _LEARNED[_norm_label(label)] = value
+    try:
+        _LEARNED_PATH.write_text(json.dumps(_LEARNED, indent=2, ensure_ascii=False))
+    except Exception as e:
+        STATE.log(f"Agent 5: couldn't save learned answer ({str(e)[:60]})")
+    _sync_learned_to_kb()      # also persist into the knowledge DB the user already has
 
 
 # -----------------------------------------------------------------------------
@@ -429,24 +536,43 @@ class FormFiller:
 
                 # --- STEP 1: DETERMINISTIC FAST-SIEVE ---
                 val = _answer_for(label, options, field_type=fld_type)
-                
+
+                # --- STEP 1b: YOUR SAVED ANSWERS (learned from earlier Telegram replies) ---
+                if val is None:
+                    saved = _learned_get(label)
+                    if saved == _BLANK:
+                        STATE.log(f"Agent 5: '{label}' is saved as intentionally blank — leaving it empty.")
+                        report["filled"].append(label)     # handled; don't ask again
+                        continue
+                    if saved:
+                        STATE.log(f"Agent 5: Reusing your saved answer for '{label}'.")
+                        val = saved
+
                 # --- STEP 2: HIGH-COGNITIVE CONTEXT CLOUD EXPANSION ---
                 if val is None:
                     STATE.log(f"Agent 5: Direct key match missing for '{label}'. Prompting Claude Context engine...")
                     val = await self._cognitive_field_resolver(label, options, fld_type)
 
-                # --- STEP 3: ASYNCHRONOUS HUMAN IN THE LOOP ESCALATION (Telegram/Dashboard) ---
+                # --- STEP 3: HUMAN IN THE LOOP (Telegram) — and remember the answer ---
                 if val is None:
                     STATE.log(f"Agent 5 Intercept: Question unmapped by all logic streams. Halting for manual input...")
                     ans = await STATE.ask(
-                        "question", 
-                        job.get("company", ""), 
+                        "question",
+                        job.get("company", ""),
                         job.get("title", ""),
-                        f"Field needs your answer: '{label}'\nOptions provided: {options if options else 'None'}",
+                        f"Field needs your answer: '{label}'\n"
+                        f"Options provided: {options if options else 'None'}\n"
+                        f"(Reply 'blank' to leave it empty — I'll remember your choice either way.)",
                         options=options
                     )
-                    if ans:
-                        val = ans
+                    a = (ans or "").strip()
+                    if a.lower() in _BLANK_WORDS:
+                        _learned_set(label, _BLANK)        # remember: leave blank next time
+                        report["asked"].append(label)
+                        continue                            # leave the field empty
+                    if a:
+                        val = a
+                        _learned_set(label, a)              # remember this answer for next time
                         report["asked"].append(label)
                     else:
                         report["needs_input"].append(label)
@@ -534,9 +660,14 @@ import json
 class AtsOfficer:
     async def check(self, tailored: dict, job: dict) -> dict:
         """
-        Agent 6 (ATS Officer): Conducts a ruthless, adversarial ATS keyword density 
+        Agent 6 (ATS Officer): Conducts a ruthless, adversarial ATS keyword density
         and alignment audit. Returns an optimization token or strict revision orders.
         """
+        # In static-résumé mode there's nothing to score or revise (fixed PDF) → auto green-light.
+        if getattr(config, "STATIC_RESUME", False) or tailored.get("static"):
+            STATE.log("Agent 6 (ATS): static résumé mode — scoring skipped, auto green-light.")
+            return {"score": 100, "passed": True, "missing": [], "failing_reason": "",
+                    "optimization_payload": "", "token": f"GREENLIGHT-{uuid.uuid4().hex[:8].upper()}"}
         STATE.log("Agent 6 (ATS): Initiating rigorous keyword mapping & scoring matrix...")
         
         # 1. Reconstruct full tailored profile text
