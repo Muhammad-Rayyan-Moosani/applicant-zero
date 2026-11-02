@@ -34,7 +34,9 @@ def _post(method: str, payload: dict) -> dict:
 
 
 def send(text: str, buttons: list[tuple[str, str]] | None = None) -> None:
-    payload = {"chat_id": config.TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    # Plain text (NO parse_mode): field labels contain '*', '_', '[' etc. (e.g. "How did you hear
+    # about us?*"), which break Telegram's Markdown parser and make the whole message fail to send.
+    payload = {"chat_id": config.TELEGRAM_CHAT_ID, "text": text}
     if buttons:
         payload["reply_markup"] = {"inline_keyboard": [[{"text": t, "callback_data": d}] for t, d in buttons]}
     _post("sendMessage", payload)
@@ -42,12 +44,12 @@ def send(text: str, buttons: list[tuple[str, str]] | None = None) -> None:
 
 def _notify(p: Pending) -> None:
     """Push a pending gate to Telegram with inline buttons (or a text prompt)."""
-    head = f"*{p.kind.upper()}* — *{p.company}*\n{p.role}\n\n{p.prompt}"
+    head = f"❓ {p.kind.upper()} — {p.company}\n{p.role}\n\n{p.prompt}"
     if p.options:
         btns = [(opt, f"ans|{p.id}|{i}") for i, opt in enumerate(p.options)]
         send(head, btns)
     else:
-        send(head + "\n\n_Reply with your answer._")
+        send(head + "\n\nReply with your answer.")
 
 
 def start() -> None:
