@@ -156,22 +156,71 @@ class Browser:
                     await el.select_option(value)
                 return True
             cls = (await el.get_attribute("class")) or ""
-            if "select__control" in cls:                     # react-select
-                inp = await el.query_selector("input")
-                if inp:
-                    await inp.click()
-                    await inp.fill(value)
-                    await asyncio.sleep(0.6)
-                    opt = await self.page.query_selector(
-                        f'div.select__option:has-text("{value}"), [role=option]:has-text("{value}")')
-                    if opt:
-                        await opt.click()
-                        return True
-                return False
+            role = ((await el.get_attribute("role")) or "").lower()
+            is_combo = ("select__control" in cls or role == "combobox"
+                        or bool(await el.query_selector("[role=combobox]")))
+            if is_combo:                                      # react-select / Workday / ARIA combobox
+                return await self._pick_from_dropdown(el, value)
             await el.fill(value)
             return True
         except Exception:
             return False
+
+    async def _pick_from_dropdown(self, el, value: str) -> bool:
+        """Open a custom dropdown and click the option whose visible text matches `value`
+        (case-insensitive, substring either way). Handles react-select, Workday and ARIA listboxes."""
+        v = (value or "").strip()
+        if not v:
+            return False
+        try:
+            await el.scroll_into_view_if_needed()
+        except Exception:
+            pass
+        # 1. open the menu (click the control, or its inner input/combobox)
+        opened = False
+        for target in (el, "input", "[role=combobox]"):
+            try:
+                node = target if target is el else await el.query_selector(target)
+                if node:
+                    await node.click()
+                    opened = True
+                    break
+            except Exception:
+                continue
+        if not opened:
+            return False
+        await asyncio.sleep(0.5)
+        # 2. type to filter, if there's a text input
+        try:
+            inp = await el.query_selector("input")
+            if inp:
+                await inp.fill(v)
+                await asyncio.sleep(0.6)
+        except Exception:
+            pass
+        # 3. click the option whose text matches
+        for sel in ("[role=option]", "div.select__option", "li[role=option]",
+                    "[data-automation-id*=promptOption]", "[data-automation-label]", "li"):
+            try:
+                opts = await self.page.query_selector_all(sel)
+            except Exception:
+                opts = []
+            for o in opts:
+                try:
+                    if not await o.is_visible():
+                        continue
+                    t = ((await o.inner_text()) or "").strip()
+                    if t and (t.lower() == v.lower() or v.lower() in t.lower() or t.lower() in v.lower()):
+                        await o.click()
+                        await asyncio.sleep(0.3)
+                        return True
+                except Exception:
+                    continue
+        try:
+            await self.page.keyboard.press("Escape")   # nothing matched — close the menu
+        except Exception:
+            pass
+        return False
 
     async def new_page(self):
         """Open a second tab (used by the Ranker to fetch a posting's full description)."""

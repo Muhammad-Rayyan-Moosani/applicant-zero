@@ -506,7 +506,8 @@ class FormFiller:
         # Guardrail variable to prevent infinite loop traps on sticky multi-page dynamic routers
         max_pages = 8
         page_counter = 0
-        
+        processed: set[str] = set()      # labels we've already attempted — never re-process/re-ask
+
         while page_counter < max_pages:
             page_counter += 1
             STATE.log(f"Agent 5: Scanning active step layout window (Screen #{page_counter})...")
@@ -530,9 +531,12 @@ class FormFiller:
                 if not label or not ref:
                     continue
                     
-                # Guard against double-filling items during browser DOM re-renders
-                if label in report["filled"]:
+                # Attempt each field label only once across all page re-scans (stops the retry loop
+                # on dropdowns that won't stick). Genuinely new fields (e.g. a dependent "Source"
+                # that appears after a parent selection) still get handled when they first appear.
+                if label in processed:
                     continue
+                processed.add(label)
 
                 # --- STEP 1: DETERMINISTIC FAST-SIEVE ---
                 val = _answer_for(label, options, field_type=fld_type)
