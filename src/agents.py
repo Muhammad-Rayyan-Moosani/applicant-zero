@@ -221,7 +221,9 @@ class DocumentTailor:
             f"COMPANY RESEARCH:\n{research[:1500]}\n\n"
             f"JOB: {role} @ {company}\nDESCRIPTION:\n{(job.get('description') or '')[:3000]}{fb}\n\n"
             '{"summary":"","bullets":["",""],"cover_letter":"a full 3-4 paragraph cover letter body"}',
-            max_tokens=2200, backend="api")        # cover quality matters → prefer the API model
+            max_tokens=4000, backend="api")        # cover quality matters → prefer the API model
+            # 4000, not ~2200: the résumé summary + 5 bullets + a 3-4 paragraph cover letter needs
+            # ~2.2k output tokens; a lower cap truncates the JSON mid-string and the parse yields {}.
         out = config.DATA / "applications" / re.sub(r"[^A-Za-z0-9]+", "_", company)[:40]
         out.mkdir(parents=True, exist_ok=True)
         cover = (f"{_PROFILE.get('preferred_first','')} {_PROFILE.get('legal_last','')}\n"
@@ -565,7 +567,9 @@ class AtsOfficer:
             f"TARGET JOB DESCRIPTION:\n{jd_text[:5000]}\n\n"
             f"PROSPECTIVE TAILORED RESUME:\n{resume_text[:5000]}\n\n"
             "JSON EXPECTED SCHEMA CONFIGURATION:\n"
-            "Return exactly this JSON format. Do not add markdown commentary outside the block:\n"
+            "Return exactly this JSON format. Do not add markdown commentary outside the block. "
+            "Keep 'failing_reason' <= 30 words and 'optimization_payload' <= 25 words (a runaway "
+            "reason truncates the JSON):\n"
             "{\n"
             '  "score": 0, \n'
             '  "missing_keywords": ["FastAPI", "Docker"], \n'
@@ -573,10 +577,11 @@ class AtsOfficer:
             '  "optimization_payload": "Provide a 1-sentence prompt helper for Agent 3 to fix the gaps"\n'
             "}"
         )
-        
+
         try:
-            # 4. Generate JSON evaluation via cloud brain
-            evaluation_result = llm.generate_json(prompt, max_tokens=1000)
+            # 4. Generate JSON evaluation via cloud brain (1500 cap: enough for the schema once the
+            #    reason is capped — a lower limit truncated the JSON and silently scored 0).
+            evaluation_result = llm.generate_json(prompt, max_tokens=1500)
             
             score = int(evaluation_result.get("score", 0) or 0)
             missing = evaluation_result.get("missing_keywords", [])

@@ -78,11 +78,13 @@ def generate_json(prompt: str, system: str = "", max_tokens: int = 2000,
     m = re.search(r"\{.*\}", raw or "", re.S)
     if not m:
         return {}
+    # strict=False lets JSON string values hold literal newlines/tabs — essential because the
+    # Tailor returns a multi-paragraph cover letter inside a string (strict=True rejects it → {}).
     try:
-        return json.loads(m.group(0))
+        return json.loads(m.group(0), strict=False)
     except Exception:
         try:
-            return json.loads(re.sub(r",\s*([}\]])", r"\1", m.group(0)))
+            return json.loads(re.sub(r",\s*([}\]])", r"\1", m.group(0)), strict=False)
         except Exception:
             return {}
 

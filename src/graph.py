@@ -112,7 +112,10 @@ class Swarm:
         tailored = self.tailor.tailor(job, feedback=fb)
         who = "Agent 3 (Tailor)"
         note = "Revised the résumé to cover the ATS gaps." if fb else "Drafted tailored résumé + cover."
-        return {"tailored": tailored, "messages": [self._msg(who, note)]}
+        # Count every tailor pass here (a node) — NOT in route_ats: LangGraph persists node returns,
+        # but discards state mutations made inside an edge/router, so counting there loops forever.
+        return {"tailored": tailored, "revise_count": s.get("revise_count", 0) + 1,
+                "messages": [self._msg(who, note)]}
 
     async def n_ats(self, s: SwarmState) -> dict:
         v = await self.ats.check(s["tailored"], s["job"])
@@ -179,10 +182,11 @@ class Swarm:
         return "tailor" if s.get("job") else "end"
 
     def route_ats(self, s: SwarmState) -> str:
+        # Pure router. revise_count is bumped in n_tailor; here we only read it. Allow the initial
+        # draft + up to 2 revisions (revise_count 1,2,3), then proceed regardless so we never stall.
         v = s.get("verdict") or {}
-        if v.get("passed") or s.get("revise_count", 0) >= 2:
+        if v.get("passed") or s.get("revise_count", 0) >= 3:
             return "proceed"
-        s["revise_count"] = s.get("revise_count", 0) + 1       # loop back to the Tailor
         return "revise"
 
     def route_access(self, s: SwarmState) -> str:
