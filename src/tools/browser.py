@@ -338,3 +338,82 @@ class Browser:
             return path
         except Exception:
             return ""
+
+    # ---------------------------------------------------------------- Computer-vision primitives
+    async def screenshot_bytes(self) -> bytes:
+        """PNG bytes of the current VIEWPORT (not full page) — matches the marks' coordinates."""
+        try:
+            return await self.page.screenshot(type="png")
+        except Exception:
+            return b""
+
+    async def get_value(self, ref: str) -> str:
+        """Read back what a field currently holds — the heart of verify-after-set."""
+        el = await self.page.query_selector(f'[data-je="{ref}"]')
+        if not el:
+            return ""
+        try:
+            return await el.evaluate("""e => {
+                const tag=e.tagName.toLowerCase();
+                if(tag==='select'){const o=e.options[e.selectedIndex]; return o?o.text.trim():'';}
+                if(tag==='input'||tag==='textarea'){
+                    if(e.type==='checkbox'||e.type==='radio') return e.checked?'checked':'';
+                    return (e.value||'').trim();
+                }
+                return (e.innerText||'').trim();   // custom combobox → its displayed text
+            }""")
+        except Exception:
+            return ""
+
+    async def marks(self, only_options: bool = False) -> list:
+        """Set-of-Marks: tag every visible interactive element with data-mark=N and return
+        [{mark,text,tag,x,y}] (centre coords in viewport px). The vision model picks a number."""
+        sel = ("[role=option],div.select__option,li[role=option],[data-automation-id],li"
+               if only_options else
+               "a,button,input,select,textarea,[role=button],[role=combobox],[role=option],"
+               "[role=checkbox],[role=radio],div.select__control,div.select__option,li,[tabindex]")
+        js = """(sel)=>{
+            const els=[...document.querySelectorAll(sel)]; const out=[]; let i=0;
+            for(const e of els){
+                const r=e.getBoundingClientRect();
+                if(r.width<5||r.height<5) continue;
+                if(r.bottom<0||r.top>innerHeight||r.right<0||r.left>innerWidth) continue;
+                const st=getComputedStyle(e);
+                if(st.visibility==='hidden'||st.display==='none'||+st.opacity===0) continue;
+                e.setAttribute('data-mark', i);
+                let t=(e.innerText||e.value||e.getAttribute('aria-label')||
+                       e.getAttribute('placeholder')||'').replace(/\\s+/g,' ').trim().slice(0,70);
+                out.push({mark:i, text:t, tag:e.tagName.toLowerCase(),
+                          x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)});
+                i++;
+            }
+            return out;
+        }"""
+        try:
+            return await self.page.evaluate(js, sel)
+        except Exception:
+            return []
+
+    async def click_mark(self, mark: int) -> bool:
+        """Click the element tagged with data-mark=N by the Set-of-Marks pass."""
+        el = await self.page.query_selector(f'[data-mark="{mark}"]')
+        if not el:
+            return False
+        try:
+            await el.scroll_into_view_if_needed()
+            await el.click(timeout=4000)
+            return True
+        except Exception:
+            try:
+                await el.click(force=True, timeout=2000)
+                return True
+            except Exception:
+                return False
+
+    async def type_active(self, value: str) -> bool:
+        """Type into whatever element currently has focus (after a vision click on a text field)."""
+        try:
+            await self.page.keyboard.type(value, delay=20)
+            return True
+        except Exception:
+            return False

@@ -582,21 +582,23 @@ class FormFiller:
                         report["needs_input"].append(label)
                         continue
                 
-                # --- STEP 4: HARD DOM INTERACTION DISPATCHER ---
-                try:
-                    success = False
-                    if fld_type in ["select", "dropdown"]:
-                        success = await browser.select_option(ref, val)
-                    elif fld_type in ["checkbox", "radio"]:
-                        success = await browser.check_element(ref, val)
-                    else:
-                        success = await browser.fill(ref, val)
-                        
-                    if success:
+                # --- STEP 4: SET → VERIFY → VISION FALLBACK → VERIFY (no silent failures) ---
+                await self._set_field(browser, ref, val, fld_type)
+                await asyncio.sleep(0.3)      # let the SPA commit the value
+                if await self._verify(browser, ref, val, fld_type):
+                    report["filled"].append(label)
+                elif getattr(config, "VISION_FALLBACK", True):
+                    STATE.log(f"Agent 5 👁 DOM didn't set '{label}' → computer-vision fallback for '{val}'…")
+                    await self._vision_fill(browser, ref, label, val, fld_type)
+                    await asyncio.sleep(0.3)
+                    if await self._verify(browser, ref, val, fld_type):
+                        STATE.log(f"Agent 5 👁 Vision set '{label}' ✓")
                         report["filled"].append(label)
-                        await asyncio.sleep(0.3) # Fast-typing humanization buffer to bypass edge honeypots
-                except Exception as dom_err:
-                    STATE.log(f"Agent 5 Form Warning: DOM interaction collapsed on label element '{label}' ({str(dom_err)})")
+                    else:
+                        STATE.log(f"Agent 5 ⚠ Couldn't confirm '{label}' — flagging it for you.")
+                        report["needs_input"].append(label)
+                else:
+                    report["needs_input"].append(label)
             
             # --- STEP 5: DOCUMENT EXTRACTION DEPLOYMENT ---
             await self._execute_dynamic_uploads(browser, tailored, report)
@@ -612,6 +614,64 @@ class FormFiller:
 
         STATE.log(f"Agent 5 Summary: Automated inputs filled: {len(report['filled'])} | HITL answers gathered: {len(report['asked'])}")
         return report
+
+    # ---------------------------------------------------------------- set / verify / vision
+    async def _set_field(self, browser, ref: str, val: str, fld_type: str) -> bool:
+        """Dispatch a DOM write for one field."""
+        try:
+            if fld_type in ("select", "dropdown"):
+                return await browser.select_option(ref, val)
+            if fld_type in ("checkbox", "radio"):
+                return await browser.check_element(ref, val)
+            return await browser.fill(ref, val)
+        except Exception as e:
+            STATE.log(f"Agent 5: DOM set failed for '{ref}' ({str(e)[:60]})")
+            return False
+
+    async def _verify(self, browser, ref: str, value: str, fld_type: str) -> bool:
+        """Read the field back and confirm it actually holds the intended value (verify-after-set)."""
+        cur = ((await browser.get_value(ref)) or "").strip().lower()
+        v = str(value).strip().lower()
+        if fld_type in ("checkbox", "radio"):
+            want_on = v in ("yes", "true", "1", "on", "checked", "agree")
+            return (cur == "checked") if want_on else (cur != "checked")
+        placeholder = cur in ("", "please select", "select...", "select", "choose", "choose...", "select one")
+        if not v:                     # we intended to leave it blank → blank/placeholder is fine
+            return True
+        if placeholder:
+            return False
+        return (v in cur) or (cur in v) or (v[:14] in cur)
+
+    async def _vision_fill(self, browser, ref: str, label: str, value: str, fld_type: str) -> bool:
+        """Computer-vision fallback: screenshot + Set-of-Marks, let Claude pick what to click."""
+        try:
+            if fld_type in ("select", "dropdown", "combobox"):
+                el = await browser.page.query_selector(f'[data-je="{ref}"]')
+                if el:
+                    try:
+                        await el.click()          # open the dropdown
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.6)
+                marks = await browser.marks(only_options=True)
+                img = await browser.screenshot_bytes()
+                idx = llm.vision_pick(
+                    img, f"Select the dropdown option that best matches '{value}' for the field '{label}'.",
+                    marks)
+                return await browser.click_mark(idx) if (idx is not None and idx >= 0) else False
+            # text-like: locate the input visually, click it, type the value
+            marks = await browser.marks()
+            img = await browser.screenshot_bytes()
+            idx = llm.vision_pick(
+                img, f"Click the text box for the field labelled '{label}' so a value can be typed into it.",
+                marks)
+            if idx is not None and idx >= 0 and await browser.click_mark(idx):
+                await browser.type_active(value)
+                return True
+            return False
+        except Exception as e:
+            STATE.log(f"Agent 5 vision fallback error: {str(e)[:80]}")
+            return False
 
     async def _cognitive_field_resolver(self, label: str, options: list, field_type: str) -> str or None:
         """

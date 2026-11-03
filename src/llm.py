@@ -5,6 +5,7 @@ single JSON object out of the reply; `research` uses Claude's server-side web_se
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
 import subprocess
@@ -87,6 +88,39 @@ def generate_json(prompt: str, system: str = "", max_tokens: int = 2000,
             return json.loads(re.sub(r",\s*([}\]])", r"\1", m.group(0)), strict=False)
         except Exception:
             return {}
+
+
+def vision_pick(image_bytes: bytes, instruction: str, candidates: list) -> int:
+    """Computer vision: show Claude a screenshot + a numbered list of clickable elements and ask
+    which single one to click to carry out `instruction`. Returns that mark number, or -1.
+
+    Vision needs the multimodal API (the CLI can't take images), so this always uses the key."""
+    if not config.ANTHROPIC_API_KEY or not image_bytes or not candidates:
+        return -1
+    b64 = base64.standard_b64encode(image_bytes).decode()
+    listing = "\n".join(f"[{c['mark']}] <{c.get('tag','')}> {c.get('text','')}".rstrip()
+                        for c in candidates[:140])
+    prompt = (
+        f"{instruction}\n\n"
+        "The screenshot is a web form. Each clickable element is listed with its number:\n"
+        f"{listing}\n\n"
+        "Decide which SINGLE element to click to do this. Reply with ONLY that number "
+        "(e.g. 42). If none fits, reply -1.")
+    try:
+        r = client().messages.create(
+            model=config.CLAUDE_MODEL, max_tokens=12,
+            messages=[{"role": "user", "content": [
+                {"type": "image",
+                 "source": {"type": "base64", "media_type": "image/png", "data": b64}},
+                {"type": "text", "text": prompt}]}],
+        )
+        txt = "".join(b.text for b in r.content if getattr(b, "type", "") == "text")
+        m = re.search(r"-?\d+", txt)
+        return int(m.group(0)) if m else -1
+    except Exception as e:
+        from .state import STATE
+        STATE.log(f"Vision error: {str(e)[:120]}")
+        return -1
 
 
 def research(query: str, max_tokens: int = 700) -> str:
