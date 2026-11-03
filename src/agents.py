@@ -394,6 +394,8 @@ def _answer_for(label: str, options=None, field_type: str = "text") -> str or No
         return None
     if "device" in low and "type" in low:   # "Phone Device Type" = Mobile/Home/Work dropdown, not the number
         return None
+    if "code" in low and ("country" in low or "phone" in low):   # "Country Phone Code" → country name, not the number
+        return _PROFILE.get("country", "Canada")
     if "middle" in low and "name" in low:   # optional middle name → leave blank, don't invent "None"
         return ""
     if "preferred" in low and "name" in low:
@@ -566,9 +568,7 @@ class FormFiller:
                         "question",
                         job.get("company", ""),
                         job.get("title", ""),
-                        f"Field needs your answer: '{label}'\n"
-                        f"Options provided: {options if options else 'None'}\n"
-                        f"(Reply 'blank' to leave it empty — I'll remember your choice either way.)",
+                        f"Field needs your answer: '{label}'  (reply 'blank' to leave it empty)",
                         options=options
                     )
                     a = (ans or "").strip()
@@ -651,9 +651,7 @@ class FormFiller:
         STATE.log(f"Agent 5 Intercept: '{label}' couldn't be set automatically — asking you on Telegram…")
         ans = await STATE.ask(
             "question", job.get("company", ""), job.get("title", ""),
-            f"Couldn't fill '{label}' automatically — what should it be?\n"
-            f"Options provided: {options if options else 'None'}\n"
-            f"(Reply 'blank' to leave it empty — I'll remember your choice.)",
+            f"Couldn't fill '{label}' automatically — what should it be?  (reply 'blank' to skip)",
             options=options)
         a = (ans or "").strip()
         if a.lower() in _BLANK_WORDS:

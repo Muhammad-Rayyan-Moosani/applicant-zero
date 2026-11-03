@@ -43,11 +43,17 @@ def send(text: str, buttons: list[tuple[str, str]] | None = None) -> None:
 
 
 def _notify(p: Pending) -> None:
-    """Push a pending gate to Telegram with inline buttons (or a text prompt)."""
-    head = f"❓ {p.kind.upper()} — {p.company}\n{p.role}\n\n{p.prompt}"
-    if p.options:
-        btns = [(opt, f"ans|{p.id}|{i}") for i, opt in enumerate(p.options)]
+    """Push a pending gate to Telegram. Inline buttons only for SHORT option lists — Telegram caps
+    message size (4096 chars) and button counts, so a 240-country dropdown as buttons silently fails
+    to send (then the dashboard looks 'one step ahead'). Big lists → ask the user to type."""
+    head = (f"❓ {p.kind.upper()} — {p.company}\n{p.role}\n\n{p.prompt}")[:3500]
+    opts = p.options or []
+    if opts and len(opts) <= 10:
+        btns = [(str(opt)[:60], f"ans|{p.id}|{i}") for i, opt in enumerate(opts)]
         send(head, btns)
+    elif opts:
+        sample = ", ".join(str(o) for o in opts[:8])
+        send(f"{head}\n\n({len(opts)} options — reply by TYPING the value, e.g. {sample} …)")
     else:
         send(head + "\n\nReply with your answer.")
 
