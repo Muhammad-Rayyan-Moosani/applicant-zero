@@ -392,6 +392,8 @@ def _answer_for(label: str, options=None, field_type: str = "text") -> str or No
     # 0. Guards against classic mis-maps on enterprise forms (Workday etc.)
     if "extension" in low:        # "Phone Extension" must NOT get the phone number
         return None
+    if "device" in low and "type" in low:   # "Phone Device Type" = Mobile/Home/Work dropdown, not the number
+        return None
     if "middle" in low and "name" in low:   # optional middle name → leave blank, don't invent "None"
         return ""
     if "preferred" in low and "name" in low:
@@ -582,23 +584,22 @@ class FormFiller:
                         report["needs_input"].append(label)
                         continue
                 
-                # --- STEP 4: SET → VERIFY → VISION FALLBACK → VERIFY (no silent failures) ---
+                # --- STEP 4: SET → VERIFY → VISION FALLBACK → VERIFY → ASK YOU (no silent failures) ---
                 await self._set_field(browser, ref, val, fld_type)
                 await asyncio.sleep(0.3)      # let the SPA commit the value
-                if await self._verify(browser, ref, val, fld_type):
-                    report["filled"].append(label)
-                elif getattr(config, "VISION_FALLBACK", True):
+                confirmed = await self._verify(browser, ref, val, fld_type)
+                if not confirmed and getattr(config, "VISION_FALLBACK", True):
                     STATE.log(f"Agent 5 👁 DOM didn't set '{label}' → computer-vision fallback for '{val}'…")
                     await self._vision_fill(browser, ref, label, val, fld_type)
                     await asyncio.sleep(0.3)
-                    if await self._verify(browser, ref, val, fld_type):
+                    confirmed = await self._verify(browser, ref, val, fld_type)
+                    if confirmed:
                         STATE.log(f"Agent 5 👁 Vision set '{label}' ✓")
-                        report["filled"].append(label)
-                    else:
-                        STATE.log(f"Agent 5 ⚠ Couldn't confirm '{label}' — flagging it for you.")
-                        report["needs_input"].append(label)
+                if confirmed:
+                    report["filled"].append(label)
                 else:
-                    report["needs_input"].append(label)
+                    # last resort: actually ask you on Telegram, then set + verify your answer
+                    await self._ask_and_commit(browser, ref, label, options, fld_type, job, report)
             
             # --- STEP 5: DOCUMENT EXTRACTION DEPLOYMENT ---
             await self._execute_dynamic_uploads(browser, tailored, report)
@@ -641,6 +642,35 @@ class FormFiller:
         if placeholder:
             return False
         return (v in cur) or (cur in v) or (v[:14] in cur)
+
+    async def _ask_and_commit(self, browser, ref: str, label: str, options, fld_type: str,
+                              job: dict, report: dict) -> None:
+        """Last resort when DOM + vision can't set a field: ask you on Telegram, then set + verify
+        your answer (DOM → vision) and remember it. This is what makes a required field never slip
+        through to the submit gate unanswered."""
+        STATE.log(f"Agent 5 Intercept: '{label}' couldn't be set automatically — asking you on Telegram…")
+        ans = await STATE.ask(
+            "question", job.get("company", ""), job.get("title", ""),
+            f"Couldn't fill '{label}' automatically — what should it be?\n"
+            f"Options provided: {options if options else 'None'}\n"
+            f"(Reply 'blank' to leave it empty — I'll remember your choice.)",
+            options=options)
+        a = (ans or "").strip()
+        if a.lower() in _BLANK_WORDS:
+            _learned_set(label, _BLANK)
+            report["asked"].append(label)
+            return
+        if not a:
+            report["needs_input"].append(label)
+            return
+        _learned_set(label, a)
+        await self._set_field(browser, ref, a, fld_type)
+        await asyncio.sleep(0.3)
+        if not await self._verify(browser, ref, a, fld_type):
+            await self._vision_fill(browser, ref, label, a, fld_type)
+            await asyncio.sleep(0.3)
+        report["asked"].append(label) if await self._verify(browser, ref, a, fld_type) \
+            else report["needs_input"].append(label)
 
     async def _vision_fill(self, browser, ref: str, label: str, value: str, fld_type: str) -> bool:
         """Computer-vision fallback: screenshot + Set-of-Marks, let Claude pick what to click."""
